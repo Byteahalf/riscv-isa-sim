@@ -321,6 +321,11 @@ void processor_t::reset()
   current_trace_index = -1;
   retire = 0;
   retire_diff = 0;
+
+  if (s_log.is_open()) {
+    s_log.close();
+  }
+  init_advanced_log();
 }
 
 extension_t* processor_t::get_extension()

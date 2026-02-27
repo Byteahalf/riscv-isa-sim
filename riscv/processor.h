@@ -253,6 +253,42 @@ enum class TraceReadState
     PAYLOAD
 };
 
+struct log_item
+{
+    enum class kind_t
+    {
+        PC,
+        RETIRE,
+        PRIV,
+        GPR,
+        CSR
+    };
+
+    struct fmt_spec
+    {
+        enum class base_t
+        {
+            DEC,
+            HEX_LOWER,
+            HEX_UPPER,
+            BIN
+        };
+
+        base_t base = base_t::DEC;
+        bool show_prefix = false;   // '#'
+        bool pad_zero = false;      // '0'
+        int width = 0;              // e.g. 8
+    };
+
+    kind_t kind;
+    std::string header;
+    fmt_spec fmt;
+
+    int gpr_index = 0;       // if GPR
+    uint32_t csr_addr = 0;   // if CSR
+};
+
+
 // this class represents one processor in a RISC-V machine.
 class processor_t : public abstract_device_t
 {
@@ -398,6 +434,9 @@ public:
   reg_t select_an_interrupt_with_default_priority(reg_t enabled_interrupts) const;
 
   void read_next_trace();
+  void load_trace_format();
+  void init_advanced_log(const std::string& path);
+  void advanced_log(reg_t pc, reg_t retire);
 
 private:
   const isa_parser_t isa;
@@ -427,6 +466,9 @@ private:
   bool trace_finish;
   reg_t retire, retire_diff;
   bool in_trap;
+  std::vector<log_item> advanced_log_items;
+  std::ofstream s_log;
+  std::string advanced_log_path;
 
   // Note: does not include single-letter extensions in misa
   std::bitset<NUM_ISA_EXTENSIONS> extension_enable_table;
