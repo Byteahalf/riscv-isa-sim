@@ -21,6 +21,7 @@
 #include <limits.h>
 #include <stdexcept>
 #include <string>
+#include <cstring>
 #include <algorithm>
 
 #ifdef __GNUC__
@@ -33,14 +34,14 @@
 processor_t::processor_t(const char* isa_str, const char* priv_str,
                          const cfg_t *cfg,
                          simif_t* sim, uint32_t id, bool halt_on_reset,
-                         FILE* log_file, std::ostream& sout_)
+                         FILE* log_file, std::ostream& sout_, std::string trace_path, std::string debug_log_format)
 : debug(false), halt_request(HR_NONE), isa(isa_str, priv_str), cfg(cfg),
   sim(sim), id(id), xlen(isa.get_max_xlen()),
   histogram_enabled(false), log_commits_enabled(false),
   log_file(log_file), sout_(sout_.rdbuf()), halt_on_reset(halt_on_reset),
   in_wfi(false), check_triggers_icount(false),
   impl_table(256, false), extension_enable_table(isa.get_extension_table()),
-  last_pc(1), executions(1), TM(cfg->trigger_count)
+  last_pc(1), executions(1), TM(cfg->trigger_count), trace_path(trace_path), debug_log_format(debug_log_format)
 {
   VU.p = this;
   TM.proc = this;
@@ -71,6 +72,10 @@ processor_t::processor_t(const char* isa_str, const char* priv_str,
   set_impl(IMPL_MMU_ASID, true);
   set_impl(IMPL_MMU_VMID, true);
 
+  if (!trace_path.empty()) {
+    load_trace();
+  }
+
   reset();
 
   register_base_instructions();
@@ -78,6 +83,147 @@ processor_t::processor_t(const char* isa_str, const char* priv_str,
   disassembler = new disassembler_t(&isa);
   for (auto e : isa.get_extensions())
     register_extension(find_extension(e.c_str())());
+}
+
+static uint64_t capture_bits(const uint8_t* data,
+             size_t high,
+             size_t low)
+{
+    size_t bit_len = high - low + 1;
+
+    // 只支持 <= 64bit
+    if (bit_len > 64)
+        throw std::runtime_error("capture_bits > 64 bits");
+
+    size_t byte_low  = low / 8;
+    size_t byte_high = high / 8;
+
+    size_t byte_count = byte_high - byte_low + 1;
+
+    uint64_t value = 0;
+
+    // 小端拼接
+    for (size_t i = 0; i < byte_count; ++i)
+    {
+        value |=
+            (static_cast<uint64_t>(data[byte_low + i])
+             << (8 * i));
+    }
+
+    // 右移去掉低位无关位
+    value >>= (low % 8);
+
+    // mask 保留有效位
+    if (bit_len < 64)
+        value &= ((1ULL << bit_len) - 1);
+
+    return value;
+}
+
+void processor_t::load_trace()
+{
+    constexpr size_t MEM_LENGTH = 3;
+    constexpr size_t TRAP_LENGTH = 3;
+    constexpr size_t WORD_SIZE = 8;          // 每次读取 8B
+    constexpr size_t MAX_PAYLOAD_BYTES = 24; // 192bit
+
+    std::ifstream file(trace_path, std::ios::binary);
+    if (!file)
+        throw std::runtime_error("open failed");
+
+    std::vector<trace_packet_t> trace;
+
+    TraceReadState state = TraceReadState::HEADER;
+
+    uint8_t header_buf[8];
+    std::array<uint8_t, MAX_PAYLOAD_BYTES> payload_buf{};
+
+    uint64_t trace_id = 0;
+    uint64_t trace_type = 0;
+    uint64_t pc = 0;
+    uint64_t retire = 0;
+
+    size_t payload_words = 0;
+    size_t store_offset = 0;
+
+    while (true)
+    {
+        if (!file.read(reinterpret_cast<char*>(header_buf), WORD_SIZE))
+            break;
+
+        if (state == TraceReadState::HEADER)
+        {
+            trace_id   = capture_bits(header_buf, 11, 0);
+            trace_type = capture_bits(header_buf, 15, 12);
+            pc         = capture_bits(header_buf, 47, 16);
+            retire     = capture_bits(header_buf, 63, 48);
+
+            state = TraceReadState::PAYLOAD;
+            store_offset = 0;
+
+            if (trace_type == 1)
+                payload_words = MEM_LENGTH - 1;
+            else if (trace_type == 2)
+                payload_words = TRAP_LENGTH - 1;
+            else
+                throw std::runtime_error("Unknown trace type");
+        }
+        else
+        {
+            std::memcpy(payload_buf.data() + store_offset * WORD_SIZE,
+                        header_buf,
+                        WORD_SIZE);
+
+            store_offset++;
+            payload_words--;
+
+            if (payload_words == 0)
+            {
+                trace_packet_t pkt;
+                pkt.trace_id = trace_id;
+                pkt.trace_type = trace_type;
+                pkt.pc = pc;
+                pkt.retire = retire;
+
+                if (trace_type == 1)
+                {
+                    mem_payload_t mem;
+                    mem.bus_mode = capture_bits(payload_buf.data(), 1, 0);
+                    mem.compress_mode = capture_bits(payload_buf.data(), 3, 2);
+                    mem.mem_data = capture_bits(payload_buf.data(), 35, 4);
+                    mem.mem_addr = capture_bits(payload_buf.data(), 67, 36);
+                    pkt.payload = mem;
+                    printf("MEM  trace: id=%llu type=%llu pc=%llu retire=%llu busmode=%llu compress_mode=%llu mem_data=%08x mem_addr=%08x\n",
+                           trace_id, trace_type, pc, retire,
+                           mem.bus_mode, mem.compress_mode, mem.mem_data, mem.mem_addr);
+                }
+                else if (trace_type == 2)
+                {
+                    trap_payload_t trap;
+                    trap.mcause =
+                        static_cast<uint32_t>(
+                            capture_bits(payload_buf.data(), 31, 0));
+                    trap.mepc =
+                        static_cast<uint32_t>(
+                            capture_bits(payload_buf.data(), 63, 32));
+                    trap.mtval =
+                        static_cast<uint32_t>(
+                            capture_bits(payload_buf.data(), 95, 64));
+                    trap.mtinst =
+                        static_cast<uint32_t>(
+                            capture_bits(payload_buf.data(), 127, 96));
+                    pkt.payload = trap;
+                    printf("TRAP trace: id=%llu type=%llu pc=%llu retire=%llu mcause=%08x mepc=%08x mtval=%08x mtinst=%08x\n",
+                           trace_id, trace_type, pc, retire,
+                           trap.mcause, trap.mepc, trap.mtval, trap.mtinst);
+                }
+
+                trace_data.push_back(std::move(pkt));
+
+                state = TraceReadState::HEADER;
+            }
+        }
+    }
 }
 
 processor_t::~processor_t()
@@ -99,7 +245,7 @@ processor_t::~processor_t()
 
 void state_t::reset(processor_t* const proc, reg_t max_isa)
 {
-  pc = DEFAULT_RSTVEC;
+  pc = 0x0;
   XPR.reset();
   FPR.reset();
 
@@ -169,6 +315,12 @@ void processor_t::reset()
 
   if (sim)
     sim->proc_reset(id);
+
+  trace_finish = false;
+  current_trace = {};
+  current_trace_index = -1;
+  retire = 0;
+  retire_diff = 0;
 }
 
 extension_t* processor_t::get_extension()
@@ -575,6 +727,8 @@ reg_t processor_t::set_lpad_expected(reg_t pc)
 
 void processor_t::disasm(insn_t insn)
 {
+  static reg_t insn_retire = 0;
+  insn_retire++;
   uint64_t bits = insn.bits();
   if (last_pc != state.pc || last_bits != bits) {
     std::stringstream s;  // first put everything in a string, later send it to output
@@ -582,7 +736,7 @@ void processor_t::disasm(insn_t insn)
     const char* sym = get_symbol(state.pc);
     if (sym != nullptr)
     {
-      s << "core " << std::dec << std::setfill(' ') << std::setw(3) << id
+      s << insn_retire << "  " << "core " << std::dec << std::setfill(' ') << std::setw(3) << id
         << ": >>>>  " << sym << std::endl;
     }
 
@@ -593,7 +747,7 @@ void processor_t::disasm(insn_t insn)
 
     unsigned max_xlen = isa.get_max_xlen();
 
-    s << "core " << std::dec << std::setfill(' ') << std::setw(3) << id
+    s << insn_retire << "  " << "core " << std::dec << std::setfill(' ') << std::setw(3) << id
       << std::hex << ": 0x" << std::setfill('0') << std::setw(max_xlen / 4)
       << zext(state.pc, max_xlen) << " (0x" << std::setw(8) << bits << ") "
       << disassembler->disassemble(insn) << std::endl;

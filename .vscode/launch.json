@@ -1,0 +1,39 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug C/C++",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/spike",
+            "args": [
+                "-l",
+                "--log=a.log",
+                "-m0x0:0x10000,0x80000000:0x8000,0xffe00000:0x200000",
+                "--isa=rv32imc_zicsr_zifencei",
+                "--instructions=10000",
+                "--trace=/mnt/c/Users/Lost/Desktop/workspace/sim/trace/trace_output.bin",
+                "test/main.elf"
+            ],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [
+                {
+                    "name": "LD_LIBRARY_PATH",
+                    "value": "${workspaceFolder}/build"
+                }
+            ],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ],
+            "preLaunchTask": "Build",
+            "miDebuggerPath": "/usr/bin/gdb"
+        }
+    ]
+}

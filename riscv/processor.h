@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <map>
 #include <cassert>
+#include <variant>
 #include "debug_rom_defines.h"
 #include "entropy_source.h"
 #include "csrs.h"
@@ -220,6 +221,38 @@ struct state_t
   void csr_init(processor_t* const proc, reg_t max_isa);
 };
 
+struct mem_payload_t
+{
+    reg_t bus_mode;
+    reg_t compress_mode;
+    reg_t mem_data;
+    reg_t mem_addr;
+};
+
+struct trap_payload_t
+{
+    reg_t mcause;
+    reg_t mepc;
+    reg_t mtval;
+    reg_t mtinst;
+};
+
+struct trace_packet_t
+{
+    reg_t trace_id;
+    reg_t trace_type;
+    reg_t pc;
+    reg_t retire;
+
+    std::variant<mem_payload_t, trap_payload_t> payload;
+};
+
+enum class TraceReadState
+{
+    HEADER,
+    PAYLOAD
+};
+
 // this class represents one processor in a RISC-V machine.
 class processor_t : public abstract_device_t
 {
@@ -227,11 +260,20 @@ public:
   processor_t(const char* isa_str, const char* priv_str,
               const cfg_t* cfg,
               simif_t* sim, uint32_t id, bool halt_on_reset,
-              FILE *log_file, std::ostream& sout_); // because of command line option --log and -s we need both
+              FILE *log_file, std::ostream& sout_, std::string trace_path, std::string debug_log_format); // because of command line option --log and -s we need both
+  processor_t(const char* isa_str, const char* priv_str,
+              const cfg_t* cfg,
+              simif_t* sim, uint32_t id, bool halt_on_reset,
+              FILE *log_file, std::ostream& sout_)
+  : processor_t(isa_str, priv_str, cfg, sim, id, halt_on_reset, log_file, sout_, "", "") {}
   ~processor_t();
 
   const isa_parser_t &get_isa() const & { return isa; }
   const cfg_t &get_cfg() const & { return *cfg; }
+
+  void after_fetch(insn_t insn);
+  bool after_exec();
+  void load_trace();
 
   void set_debug(bool value);
   void set_histogram(bool value);
@@ -355,6 +397,8 @@ public:
 
   reg_t select_an_interrupt_with_default_priority(reg_t enabled_interrupts) const;
 
+  void read_next_trace();
+
 private:
   const isa_parser_t isa;
   const cfg_t * const cfg;
@@ -375,6 +419,14 @@ private:
   bool in_wfi;
   bool check_triggers_icount;
   std::vector<bool> impl_table;
+  std::string trace_path;
+  std::string debug_log_format;
+  std::vector<trace_packet_t> trace_data;
+  trace_packet_t current_trace;
+  int current_trace_index = -1;
+  bool trace_finish;
+  reg_t retire, retire_diff;
+  bool in_trap;
 
   // Note: does not include single-letter extensions in misa
   std::bitset<NUM_ISA_EXTENSIONS> extension_enable_table;

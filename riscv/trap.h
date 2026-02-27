@@ -70,6 +70,19 @@ class mem_trap_t : public trap_t
   reg_t tval, tval2, tinst;
 };
 
+class ext_trap_t : public trap_t {
+  public:
+    ext_trap_t(reg_t mcause, reg_t mtval, reg_t mtinst) 
+      :trap_t(mcause), tval_reg(mtval), tinst_reg(mtinst) {}
+    bool has_tval() override { return true; }
+    reg_t get_tval() override { return tval_reg; }
+    bool has_tinst() override { return true; }
+    reg_t get_tinst() override { return tinst_reg; }
+
+  private:
+    reg_t tval_reg, tinst_reg;
+};
+
 #define DECLARE_TRAP(n, x) class trap_##x : public trap_t { \
  public: \
   trap_##x() : trap_t(n) {} \

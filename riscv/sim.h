@@ -37,7 +37,20 @@ public:
         bool dtb_enabled, const char *dtb_file,
         bool socket_enabled,
         FILE *cmd_file, // needed for command line option --cmd
-        std::optional<unsigned long long> instruction_limit);
+        std::optional<unsigned long long> instruction_limit,
+        std::string trace_path, std::string debug_log_format
+      );
+  sim_t(const cfg_t *cfg, bool halted,
+        std::vector<std::pair<reg_t, abstract_mem_t*>> mems,
+        const std::vector<device_factory_sargs_t>& plugin_device_factories,
+        const std::vector<std::string>& args,
+        const debug_module_config_t &dm_config, const char *log_path,
+        bool dtb_enabled, const char *dtb_file,
+        bool socket_enabled,
+        FILE *cmd_file, // needed for command line option --cmd
+        std::optional<unsigned long long> instruction_limit
+      )
+  : sim_t(cfg, halted, mems, plugin_device_factories, args, dm_config, log_path, dtb_enabled, dtb_file, socket_enabled, cmd_file, instruction_limit, "", "") {};
   ~sim_t();
 
   int run();
@@ -84,6 +97,8 @@ private:
   std::shared_ptr<plic_t> plic;
   bus_t bus;
   log_file_t log_file;
+  std::string trace_path;
+  std::string debug_log_format;
 
   FILE *cmd_file; // pointer to debug command input file
 

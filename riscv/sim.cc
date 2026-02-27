@@ -45,7 +45,8 @@ sim_t::sim_t(const cfg_t *cfg, bool halted,
              bool dtb_enabled, const char *dtb_file,
              bool socket_enabled,
              FILE *cmd_file, // needed for command line option --cmd
-             std::optional<unsigned long long> instruction_limit)
+             std::optional<unsigned long long> instruction_limit,
+             std::string trace_path, std::string debug_log_format)
   : htif_t(args),
     cfg(cfg),
     mems(mems),
@@ -60,7 +61,9 @@ sim_t::sim_t(const cfg_t *cfg, bool halted,
     histogram_enabled(false),
     log(false),
     remote_bitbang(NULL),
-    debug_module(this, dm_config)
+    debug_module(this, dm_config),
+    trace_path(trace_path),
+    debug_log_format(debug_log_format)
 {
   signal(SIGINT, &handle_signal);
 
@@ -101,10 +104,12 @@ sim_t::sim_t(const cfg_t *cfg, bool halted,
   // When running without using a dtb, skip the fdt-based configuration steps
   if (!dtb_enabled) {
     for (size_t i = 0; i < cfg->nprocs(); i++) {
-      procs.push_back(new processor_t(cfg->isa, cfg->priv,
-                                      cfg, this, cfg->hartids[i], halted,
-                                      log_file.get(), sout_));
-      harts[cfg->hartids[i]] = procs[i];
+      auto proc = new processor_t(cfg->isa, cfg->priv,
+                                  cfg, this, cfg->hartids[i], halted,
+                                  log_file.get(), sout_,
+                                  trace_path, debug_log_format);
+      procs.push_back(proc);
+      harts[cfg->hartids[i]] = proc;
     }
     return;
   } // otherwise, generate the procs by parsing the DTS
@@ -195,10 +200,12 @@ sim_t::sim_t(const cfg_t *cfg, bool halted,
       exit(1);
     }
 
-    procs.push_back(new processor_t(isa_str, cfg->priv,
-                                    cfg, this, hartid, halted,
-                                    log_file.get(), sout_));
-    harts[hartid] = procs[cpu_idx];
+    auto proc = new processor_t(isa_str, cfg->priv,
+                            cfg, this, hartid, halted,
+                            log_file.get(), sout_, 
+                            trace_path, debug_log_format);
+    procs.push_back(proc);
+    harts[hartid] = proc;
 
     // handle pmp
     reg_t pmp_num, pmp_granularity;

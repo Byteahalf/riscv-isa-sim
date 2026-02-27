@@ -207,6 +207,261 @@ bool processor_t::slow_path() const
          log_commits_enabled || histogram_enabled || in_wfi || check_triggers_icount;
 }
 
+static bool insn_is_read(insn_t insn)
+{
+    if (insn.length() == 2)
+    {
+        // Compressed (C extension)
+        uint64_t op = insn.rvc_opcode();
+        uint64_t f3 = insn.funct3();
+        // Quadrant 0 (00)
+        if (op == 0b00)
+        {
+            // C.LW / C.LD / C.FLW / C.FLD
+            if (f3 == 0b010 || f3 == 0b011)
+                return true;
+        }
+        // Quadrant 2 (10)
+        if (op == 0b10)
+        {
+            // C.LWSP / C.LDSP / C.FLWSP / C.FLDSP
+            if (f3 == 0b010 || f3 == 0b011)
+                return true;
+        }
+        return false;
+    }
+    uint64_t opc = insn.opcode();
+    switch (opc)
+    {
+        case 0x03: // Integer Load
+            return true;
+        case 0x07: // Float / Vector Load
+            return true;
+        case 0x2F: // Atomic
+        {
+            uint64_t funct5 = insn.funct7() >> 2;
+            // LR: funct5 == 0b00010
+            if (funct5 == 0b00010)
+                return true;
+            // AMO: all others except SC
+            // SC: funct5 == 0b00011
+            if (funct5 != 0b00011)
+                return true;
+            return false;
+        }
+        default:
+            return false;
+    }
+}
+static bool insn_is_write(insn_t insn)
+{
+    if (insn.length() == 2)
+    {
+        // Compressed (C extension)
+        uint64_t op = insn.rvc_opcode();
+        uint64_t f3 = insn.funct3();
+        // Quadrant 0 (00)
+        if (op == 0b00)
+        {
+            // C.SW / C.SD / C.FSW / C.FSD
+            if (f3 == 0b110 || f3 == 0b111)
+                return true;
+        }
+        // Quadrant 2 (10)
+        if (op == 0b10)
+        {
+            // C.SWSP / C.SDSP / C.FSWSP / C.FSDSP
+            if (f3 == 0b110 || f3 == 0b111)
+                return true;
+        }
+        return false;
+    }
+
+    uint64_t opc = insn.opcode();
+
+    switch (opc)
+    {
+        case 0x23: // Integer Store
+            return true;
+        case 0x27: // Float / Vector Store
+            return true;
+        case 0x2F: // Atomic
+        {
+            uint64_t funct5 = insn.funct7() >> 2;
+
+            // SC
+            if (funct5 == 0b00011)
+                return true;
+
+            // AMO (read + write)
+            if (funct5 != 0b00010)
+                return true;
+
+            return false;
+        }
+        default:
+            return false;
+    }
+}
+
+static int64_t sign_extend_u64(uint64_t v, unsigned bits)
+{
+    uint64_t mask = (bits == 64) ? ~0ull : ((1ull << bits) - 1ull);
+    uint64_t x = v & mask;
+    uint64_t sign = 1ull << (bits - 1);
+    if (x & sign)
+        x |= ~mask;
+    return static_cast<int64_t>(x);
+}
+
+void processor_t::read_next_trace()
+{
+  static reg_t mem_addr_ref = 0;
+
+  if (current_trace_index < static_cast<int64_t>(trace_data.size()) - 1)
+  {
+    current_trace_index++;
+    current_trace = trace_data[current_trace_index];
+    trace_finish = false;
+    printf("Trace Recovered @ %ld: PC=%lx, retire=%ld, type=%ld\n", trace_finish, current_trace.pc, current_trace.retire, current_trace.trace_type);
+
+    if (current_trace.trace_type == 1) { // For mem, recover original address
+      if (auto* mp = std::get_if<mem_payload_t>(&current_trace.payload)){
+        switch (mp->compress_mode & 0x3) {
+          case 0: // ABS
+            mem_addr_ref = mp->mem_addr;
+            break;
+
+          case 1: // 8-bit offset
+          {
+            int64_t off = sign_extend_u64(mp->mem_addr, 8);
+            reg_t abs = static_cast<reg_t>(mem_addr_ref + static_cast<reg_t>(off));
+            mp->mem_addr = abs;
+            mem_addr_ref = abs;
+            break;
+          }
+
+          case 2: // 16-bit offset
+          {
+            int64_t off = sign_extend_u64(mp->mem_addr, 16);
+            reg_t abs = static_cast<reg_t>(mem_addr_ref + static_cast<reg_t>(off));
+            mp->mem_addr = abs;
+            mem_addr_ref = abs;
+            break;
+          }
+
+          case 3: // 32-bit offset (kept for completeness)
+          {
+            int64_t off = sign_extend_u64(mp->mem_addr, 32);
+            reg_t abs = static_cast<reg_t>(mem_addr_ref + static_cast<reg_t>(off));
+            mp->mem_addr = abs;
+            mem_addr_ref = abs;
+            break;
+          }
+
+          default:
+            throw std::runtime_error("Invalid compress mode in trace");
+        }
+      }
+    }
+  }
+  else {
+    current_trace_index = -2;
+    trace_finish = true;
+    printf("Trace finish");
+  }
+}
+
+void processor_t::after_fetch(insn_t insn){
+  reg_t pc = state.pc;
+  static reg_t last_pc = -1;
+  static reg_t mem_addr_ref;
+
+  if (current_trace_index == -1) {
+    read_next_trace();
+  }
+
+  if(pc != last_pc) {
+    retire++;
+    retire_diff++;
+    printf("AF @ %lx: retire=%ld, retire_diff=%ld\n", pc, retire, retire_diff);
+    // Check mem event
+    if (!trace_finish && current_trace.trace_type == 1) {
+      if (current_trace.pc == pc && current_trace.retire == retire_diff) {
+        auto payload = std::get<mem_payload_t>(current_trace.payload);
+        reg_t mem_addr;
+        // Recover address
+        if (insn_is_read(insn) && (payload.bus_mode & 0x2)) { // Read Event, change MMU to simulate
+          mmu->store<uint32_t>(payload.mem_addr, payload.mem_data);
+          read_next_trace();
+          retire_diff = 0;
+        }
+        else if (insn_is_write(insn) && (payload.bus_mode & 0x1)) { // Write Event, Just for validate
+          //
+          read_next_trace();
+          retire_diff = 0;
+        }
+        else if(insn_is_read(insn) && insn_is_write(insn) && (payload.bus_mode & 0x3 == 0x3)) { // AMO, treat as read and write
+          mmu->store<uint32_t>(payload.mem_addr, payload.mem_data);
+          read_next_trace();
+          retire_diff = 0;
+        }
+        else {
+          printf("Trace mismatch (Mem type mismatch) at %lx: retire=%ld\n busmode=%ld, insn=<%lx>",
+               pc, retire_diff, payload.bus_mode, insn);
+          throw std::runtime_error("Trace mismatch");
+        }
+      }
+      else if (current_trace.retire < retire_diff) {
+        printf("Trace mismatch at %lx: expected pc=%lx retire=%ld, got pc=%lx retire=%ld\n",
+               pc, current_trace.pc, current_trace.retire, pc, retire_diff);
+        throw std::runtime_error("Trace mismatch");
+      }
+    }
+  }
+
+  last_pc = pc;
+}
+
+bool processor_t::after_exec() {
+  reg_t pc = state.pc;
+  printf("AE @ %lx: retire=%ld\n", pc, retire);
+  if ((in_wfi || in_trap) & trace_finish) {
+    printf("Meet trap but trace end\n");
+    exit(0);
+  }
+  if (!trace_finish && current_trace.trace_type == 2) { // Trap
+    auto payload = std::get<trap_payload_t>(current_trace.payload);
+    if (pc == payload.mepc && (current_trace.retire - 1) == retire_diff) {
+      ext_trap_t ext_trap(payload.mcause, payload.mtval, payload.mtinst);
+      take_trap(ext_trap, payload.mepc);
+      if (state.pc != current_trace.pc) {
+        printf("Trace mismatch after trap at %lx: expected pc=%lx, got pc=%lx\n",
+             state.pc, current_trace.pc, state.pc);
+        throw std::runtime_error("Trace mismatch");
+      }
+      retire_diff = -1;
+      in_wfi = false;
+      if ((payload.mcause & (1ull << 31)) == 0) {
+        in_trap = false;
+      }
+      read_next_trace();
+      return true;
+    }
+    else if ((current_trace.retire - 1) < retire_diff) {
+      printf("Trace mismatch at %lx: expected pc=%lx, got pc=%lx\n",
+             pc, payload.mepc, pc);
+      throw std::runtime_error("Trace mismatch");
+    }
+  }
+  if (in_wfi) {
+    throw std::runtime_error("WFI but no interrupt");
+  }
+  if (in_trap) {
+    throw std::runtime_error("In trap but no trap trace taken");
+  }
+}
+
 // fetch/decode/execute loop
 void processor_t::step(size_t n)
 {
@@ -233,7 +488,7 @@ void processor_t::step(size_t n)
       if (unlikely(invalid_pc(pc))) { \
         switch (pc) { \
           case PC_SERIALIZE_BEFORE: state.serialized = true; break; \
-          case PC_SERIALIZE_AFTER: ++instret; break; \
+          case PC_SERIALIZE_AFTER: ++instret; after_exec(); break; \
           default: abort(); \
         } \
         pc = state.pc; \
@@ -282,10 +537,12 @@ void processor_t::step(size_t n)
 
           in_wfi = false;
           insn_fetch_t fetch = mmu->load_insn(pc);
+          after_fetch(fetch.insn);
           if (debug && !state.serialized)
             disasm(fetch.insn);
           pc = execute_insn_logged(this, pc, fetch);
           advance_pc();
+          after_exec();
 
           // Resume from debug mode in critical error
           if (state.critical_error && !state.debug_mode) {
@@ -321,6 +578,10 @@ void processor_t::step(size_t n)
     }
     catch(trap_t& t)
     {
+      in_trap = true;
+      if (after_exec()) {
+        continue;
+      }
       take_trap(t, pc);
       n = instret;
 
@@ -359,8 +620,11 @@ void processor_t::step(size_t n)
       // In the debug ROM this prevents us from wasting time looping, but also
       // allows us to switch to other threads only once per idle loop in case
       // there is activity.
-      n = ++instret;
       in_wfi = true;
+      if(after_exec()) {
+        continue;
+      }
+      n = ++instret;
     }
 
 serialize:

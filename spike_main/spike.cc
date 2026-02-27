@@ -40,6 +40,9 @@ static void help(int exit_code = 1)
   fprintf(stderr, "  -h, --help            Print this help message\n");
   fprintf(stderr, "  --halted              Start halted, allowing a debugger to connect\n");
   fprintf(stderr, "  --log=<name>          File name for option -l\n");
+  fprintf(stderr, "  --log_format=<name, [name], ...>\n");
+  fprintf(stderr, "                          log format\n");
+  fprintf(stderr, "  --trace=<path>        trace file path.\n");
   fprintf(stderr, "  --debug-cmd=<name>    Read commands from file (use with -d)\n");
   fprintf(stderr, "  --isa=<name>          RISC-V ISA string [default %s]\n", DEFAULT_ISA);
   fprintf(stderr, "  --pmpregions=<n>      Number of PMP regions [default 16]\n");
@@ -48,8 +51,8 @@ static void help(int exit_code = 1)
   fprintf(stderr, "  --pc=<address>        Override ELF entry point\n");
   fprintf(stderr, "  --hartids=<a,b,...>   Explicitly specify hartids, default is 0,1,...\n");
   fprintf(stderr, "  --ic=<S>:<W>:<B>      Instantiate a cache model with S sets,\n");
-  fprintf(stderr, "  --dc=<S>:<W>:<B>        W ways, and B-byte blocks (with S and\n");
-  fprintf(stderr, "  --l2=<S>:<W>:<B>        B both powers of 2).\n");
+  fprintf(stderr, "  --dc=<S>:<W>:<B>      W ways, and B-byte blocks (with S and\n");
+  fprintf(stderr, "  --l2=<S>:<W>:<B>      B both powers of 2).\n");
   fprintf(stderr, "  --big-endian          Use a big-endian memory system.\n");
   fprintf(stderr, "  --device=<name>       Attach MMIO plugin device from an --extlib library,\n");
   fprintf(stderr, "                          specify --device=<name>,<args> to pass down extra args.\n");
@@ -343,6 +346,8 @@ int main(int argc, char** argv)
   std::optional<unsigned long long> instructions;
   debug_module_config_t dm_config;
   cfg_arg_t<size_t> nprocs(1);
+  std::string trace_path = "";
+  std::string debug_log_format = "";
 
   cfg_t cfg;
 
@@ -461,11 +466,23 @@ int main(int argc, char** argv)
     instructions = strtoull(s, 0, 0);
   });
 
+  parser.option(0, "trace", 1, [&](const char* s){
+    trace_path = s;
+  });
+  parser.option(0, "log_format", 1, [&](const char* s){
+    debug_log_format = s;
+  });
+
   auto argv1 = parser.parse(argv);
   std::vector<std::string> htif_args(argv1, (const char*const*)argv + argc);
 
   if (!*argv1)
     help();
+
+  if (nprocs() > 1 && trace_path != ""){
+    printf("Trace file cannot apply to multi-core\n");
+    exit(1);
+  }
 
   std::vector<std::pair<reg_t, abstract_mem_t*>> mems =
       make_mems(cfg.mem_layout);
@@ -522,7 +539,10 @@ int main(int argc, char** argv)
       mems, plugin_device_factories, htif_args, dm_config, log_path, dtb_enabled, dtb_file,
       socket,
       cmd_file,
-      instructions);
+      instructions,
+      trace_path,
+      debug_log_format
+    );
   std::unique_ptr<remote_bitbang_t> remote_bitbang((remote_bitbang_t *) NULL);
   std::unique_ptr<jtag_dtm_t> jtag_dtm(
       new jtag_dtm_t(&s.debug_module, dmi_rti));

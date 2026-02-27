@@ -3,7 +3,7 @@
 #define _RISCV_PLATFORM_H
 
 #define DEFAULT_KERNEL_BOOTARGS "console=ttyS0 earlycon"
-#define DEFAULT_RSTVEC     0x00001000
+#define DEFAULT_RSTVEC     0x12000000
 #define DEFAULT_ISA        "rv64imafdc_zicntr_zihpm"
 #define DEFAULT_PRIV       "MSU"
 #define CLINT_BASE         0x02000000
@@ -19,7 +19,7 @@
 #define NS16550_INTERRUPT_ID 1
 #define EXT_IO_BASE        0x40000000
 #define DRAM_BASE          0x80000000
-#define DEBUG_START        0x0
+#define DEBUG_START        0x11000000
 #define DEBUG_SIZE         0x1000
 
 #endif
