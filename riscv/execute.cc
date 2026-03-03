@@ -209,96 +209,123 @@ bool processor_t::slow_path() const
 
 static bool insn_is_read(insn_t insn)
 {
+    uint64_t raw = insn.bits();
+
     if (insn.length() == 2)
     {
-        // Compressed (C extension)
-        uint64_t op = insn.rvc_opcode();
-        uint64_t f3 = insn.funct3();
-        // Quadrant 0 (00)
-        if (op == 0b00)
-        {
-            // C.LW / C.LD / C.FLW / C.FLD
-            if (f3 == 0b010 || f3 == 0b011)
-                return true;
-        }
-        // Quadrant 2 (10)
-        if (op == 0b10)
-        {
-            // C.LWSP / C.LDSP / C.FLWSP / C.FLDSP
-            if (f3 == 0b010 || f3 == 0b011)
-                return true;
-        }
+        // 16-bit Compressed
+        constexpr uint64_t mask = 0b11 | (0b111ULL << 13);
+
+        // Quadrant 0 (00) + funct3 010 / 011
+        if ((raw & mask) == (0b00 | (0b010ULL << 13)))
+            return true;
+        if ((raw & mask) == (0b00 | (0b011ULL << 13)))
+            return true;
+
+        // Quadrant 2 (10) + funct3 010 / 011
+        if ((raw & mask) == (0b10 | (0b010ULL << 13)))
+            return true;
+        if ((raw & mask) == (0b10 | (0b011ULL << 13)))
+            return true;
+
         return false;
     }
-    uint64_t opc = insn.opcode();
+
+    // 32-bit instruction
+    uint64_t opc = raw & 0x7F;  // bits[6:0]
+
     switch (opc)
     {
         case 0x03: // Integer Load
             return true;
+
         case 0x07: // Float / Vector Load
             return true;
+
         case 0x2F: // Atomic
         {
-            uint64_t funct5 = insn.funct7() >> 2;
-            // LR: funct5 == 0b00010
+            // funct7 = bits[31:25]
+            uint64_t funct7 = (raw >> 25) & 0x7F;
+            uint64_t funct5 = funct7 >> 2;  // bits[31:27]
+
+            // LR (00010)
             if (funct5 == 0b00010)
                 return true;
-            // AMO: all others except SC
-            // SC: funct5 == 0b00011
-            if (funct5 != 0b00011)
-                return true;
-            return false;
+
+            // SC (00011) 不读旧值
+            if (funct5 == 0b00011)
+                return false;
+
+            // AMO
+            return true;
         }
+
         default:
             return false;
     }
 }
+
 static bool insn_is_write(insn_t insn)
 {
+    uint64_t raw = insn.bits();
+
+    // -------------------------
+    // 16-bit Compressed
+    // -------------------------
     if (insn.length() == 2)
     {
-        // Compressed (C extension)
-        uint64_t op = insn.rvc_opcode();
-        uint64_t f3 = insn.funct3();
-        // Quadrant 0 (00)
-        if (op == 0b00)
-        {
-            // C.SW / C.SD / C.FSW / C.FSD
-            if (f3 == 0b110 || f3 == 0b111)
-                return true;
-        }
-        // Quadrant 2 (10)
-        if (op == 0b10)
-        {
-            // C.SWSP / C.SDSP / C.FSWSP / C.FSDSP
-            if (f3 == 0b110 || f3 == 0b111)
-                return true;
-        }
+        // bits[1:0]   -> quadrant
+        // bits[15:13] -> funct3
+        constexpr uint64_t mask = 0b11ULL | (0b111ULL << 13);
+
+        // Quadrant 0 (00) + funct3 110 / 111
+        if ((raw & mask) == (0b00ULL | (0b110ULL << 13)))
+            return true;
+        if ((raw & mask) == (0b00ULL | (0b111ULL << 13)))
+            return true;
+
+        // Quadrant 2 (10) + funct3 110 / 111
+        if ((raw & mask) == (0b10ULL | (0b110ULL << 13)))
+            return true;
+        if ((raw & mask) == (0b10ULL | (0b111ULL << 13)))
+            return true;
+
         return false;
     }
 
-    uint64_t opc = insn.opcode();
+    // -------------------------
+    // 32-bit
+    // -------------------------
 
-    switch (opc)
+    // opcode bits[6:0]
+    uint64_t opcode = raw & 0x7F;
+
+    switch (opcode)
     {
         case 0x23: // Integer Store
             return true;
+
         case 0x27: // Float / Vector Store
             return true;
+
         case 0x2F: // Atomic
         {
-            uint64_t funct5 = insn.funct7() >> 2;
+            // bits[31:27] = funct5
+            constexpr uint64_t funct5_mask = 0b11111ULL << 27;
+            uint64_t funct5 = (raw & funct5_mask) >> 27;
 
-            // SC
+            // SC (00011) -> write
             if (funct5 == 0b00011)
                 return true;
 
-            // AMO (read + write)
-            if (funct5 != 0b00010)
-                return true;
+            // LR (00010) -> read only
+            if (funct5 == 0b00010)
+                return false;
 
-            return false;
+            // AMO
+            return true;
         }
+
         default:
             return false;
     }
@@ -399,7 +426,6 @@ void processor_t::after_fetch(insn_t insn){
           retire_diff = 0;
         }
         else if (insn_is_write(insn) && (payload.bus_mode & 0x1)) { // Write Event, Just for validate
-          //
           read_next_trace();
           retire_diff = 0;
         }
@@ -420,8 +446,20 @@ void processor_t::after_fetch(insn_t insn){
         throw std::runtime_error("Trace mismatch");
       }
     }
-    if (retire == 3147){
-      asm volatile("nop");
+    else if(trace_finish) {
+      auto payload = std::get<mem_payload_t>(current_trace.payload);
+      if (insn_is_read(insn) && (payload.bus_mode & 0x2)) {
+        printf("Trace finish but expected mem read event");
+        throw std::runtime_error("Trace finish but expected mem read event");
+      }
+      if (insn_is_write(insn) && (payload.bus_mode & 0x1)) {
+        printf("Trace finish but expected mem write event");
+        throw std::runtime_error("Trace finish but expected mem write event");
+      }
+      if(insn_is_read(insn) && insn_is_write(insn) && (payload.bus_mode & 0x3 == 0x3)) {
+        printf("Trace finish but expected mem AMO event");
+        throw std::runtime_error("Trace finish but expected mem AMO event");
+      }
     }
   }
 
