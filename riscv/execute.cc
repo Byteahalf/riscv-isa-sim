@@ -382,6 +382,8 @@ void processor_t::after_fetch(insn_t insn){
   }
 
   if(pc != last_pc) {
+    current_insn_pc = pc;
+    current_insn = insn;
     retire++;
     retire_diff++;
     printf("AF @ %lx: retire=%ld, retire_diff=%ld\n", pc, retire, retire_diff);
@@ -418,6 +420,9 @@ void processor_t::after_fetch(insn_t insn){
         throw std::runtime_error("Trace mismatch");
       }
     }
+    if (retire == 3147){
+      asm volatile("nop");
+    }
   }
 
   last_pc = pc;
@@ -453,6 +458,9 @@ bool processor_t::after_exec() {
              pc, payload.mepc, pc);
       throw std::runtime_error("Trace mismatch");
     }
+  }
+  if (!advanced_log_items.empty()){
+    advanced_log(current_insn_pc, retire, current_insn);
   }
   if (in_wfi) {
     throw std::runtime_error("WFI but no interrupt");

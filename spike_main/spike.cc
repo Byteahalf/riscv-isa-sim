@@ -40,9 +40,9 @@ static void help(int exit_code = 1)
   fprintf(stderr, "  -h, --help            Print this help message\n");
   fprintf(stderr, "  --halted              Start halted, allowing a debugger to connect\n");
   fprintf(stderr, "  --log=<name>          File name for option -l\n");
-  fprintf(stderr, "  --log_format=<name, [name], ...>\n");
+  fprintf(stderr, "  --log_format=<name, [name], ...>\n"); // new
   fprintf(stderr, "                          log format\n");
-  fprintf(stderr, "  --trace=<path>        trace file path.\n");
+  fprintf(stderr, "  --trace=<path>        trace file path.\n"); // new
   fprintf(stderr, "  --debug-cmd=<name>    Read commands from file (use with -d)\n");
   fprintf(stderr, "  --isa=<name>          RISC-V ISA string [default %s]\n", DEFAULT_ISA);
   fprintf(stderr, "  --pmpregions=<n>      Number of PMP regions [default 16]\n");

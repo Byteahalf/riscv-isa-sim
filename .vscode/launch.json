@@ -11,8 +11,9 @@
                 "--log=a.log",
                 "-m0x0:0x10000,0x80000000:0x8000,0xffe00000:0x200000",
                 "--isa=rv32imc_zicsr_zifencei",
-                "--instructions=10000",
+                "--instructions=5000",
                 "--trace=/mnt/c/Users/Lost/Desktop/workspace/sim/trace/trace_output.bin",
+                "--log_format=pc:08x,insn:08x,ra:08x,sp:08x,gp:08x",
                 "test/main.elf"
             ],
             "stopAtEntry": false,

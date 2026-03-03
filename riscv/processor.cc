@@ -76,6 +76,8 @@ processor_t::processor_t(const char* isa_str, const char* priv_str,
     load_trace();
   }
 
+  load_trace_format();
+
   reset();
 
   register_base_instructions();
@@ -325,7 +327,15 @@ void processor_t::reset()
   if (s_log.is_open()) {
     s_log.close();
   }
-  init_advanced_log();
+  
+  std::ostringstream oss;
+  oss << "trace." << id << ".csv";
+
+  if (!advanced_log_items.empty()) {
+    std::string advance_log_path = oss.str();
+    init_advanced_log(advance_log_path);
+  }
+  
 }
 
 extension_t* processor_t::get_extension()

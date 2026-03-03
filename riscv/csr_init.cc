@@ -39,6 +39,8 @@ void state_t::csr_init(processor_t* const proc, reg_t max_isa)
   add_csr(CSR_MISA, misa = std::make_shared<misa_csr_t>(proc, CSR_MISA, max_isa));
   mstatus = std::make_shared<mstatus_csr_t>(proc, CSR_MSTATUS);
 
+  add_csr(CSR_MXISA, std::make_shared<const_csr_t>(proc, CSR_MXISA, 0x10000003));
+
   if (xlen == 32) {
     add_csr(CSR_MSTATUS, std::make_shared<rv32_low_csr_t>(proc, CSR_MSTATUS, mstatus));
     add_csr(CSR_MSTATUSH, mstatush = std::make_shared<rv32_high_csr_t>(proc, CSR_MSTATUSH, mstatus));

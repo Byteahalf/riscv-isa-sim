@@ -154,6 +154,7 @@ struct state_t
   csr_t_p tcontrol;
   csr_t_p scontext;
   csr_t_p mcontext;
+  // std::shared_ptr<const_csr_t> mxisa;
 
   csr_t_p jvt;
 
@@ -223,62 +224,78 @@ struct state_t
 
 struct mem_payload_t
 {
-    reg_t bus_mode;
-    reg_t compress_mode;
-    reg_t mem_data;
-    reg_t mem_addr;
+  reg_t bus_mode;
+  reg_t compress_mode;
+  reg_t mem_data;
+  reg_t mem_addr;
 };
 
 struct trap_payload_t
 {
-    reg_t mcause;
-    reg_t mepc;
-    reg_t mtval;
-    reg_t mtinst;
+  reg_t mcause;
+  reg_t mepc;
+  reg_t mtval;
+  reg_t mtinst;
 };
 
 struct trace_packet_t
 {
-    reg_t trace_id;
-    reg_t trace_type;
-    reg_t pc;
-    reg_t retire;
+  reg_t trace_id;
+  reg_t trace_type;
+  reg_t pc;
+  reg_t retire;
 
-    std::variant<mem_payload_t, trap_payload_t> payload;
+  std::variant<mem_payload_t, trap_payload_t> payload;
 };
 
 enum class TraceReadState
 {
-    HEADER,
-    PAYLOAD
+  HEADER,
+  PAYLOAD
 };
 
 struct log_item
 {
-    enum class kind_t
+  enum class kind_t
+  {
+    PC,
+    RETIRE,
+    INSN,
+    PRIV,
+    GPR,
+    FPR,
+    CSR
+  };
+
+  struct fmt_spec
+  {
+    enum class base_t
     {
-        PC,
-        RETIRE,
-        PRIV,
-        GPR,
-        CSR
+      DEC,
+      HEX_LOWER,
+      HEX_UPPER,
+      BIN
     };
 
-    struct fmt_spec
+    enum class float_t
     {
-        enum class base_t
-        {
-            DEC,
-            HEX_LOWER,
-            HEX_UPPER,
-            BIN
-        };
-
-        base_t base = base_t::DEC;
-        bool show_prefix = false;   // '#'
-        bool pad_zero = false;      // '0'
-        int width = 0;              // e.g. 8
+      NONE,   // 整数
+      FIXED,  // f
+      SCI,    // e
+      GENERAL // g
     };
+
+    base_t base = base_t::DEC;
+    float_t float_mode = float_t::NONE;
+
+    bool show_prefix = false;   // '#'
+    bool is_signed = false;     // 's'
+    bool pad_zero = false;      // '0'
+
+    int width = 0;
+
+    int precision = -1;         // -1 表示未指定
+  };
 
     kind_t kind;
     std::string header;
@@ -436,7 +453,7 @@ public:
   void read_next_trace();
   void load_trace_format();
   void init_advanced_log(const std::string& path);
-  void advanced_log(reg_t pc, reg_t retire);
+  void advanced_log(reg_t pc, reg_t retire, insn_t insn);
 
 private:
   const isa_parser_t isa;
@@ -469,6 +486,8 @@ private:
   std::vector<log_item> advanced_log_items;
   std::ofstream s_log;
   std::string advanced_log_path;
+  reg_t current_insn_pc;
+  insn_t current_insn;
 
   // Note: does not include single-letter extensions in misa
   std::bitset<NUM_ISA_EXTENSIONS> extension_enable_table;
