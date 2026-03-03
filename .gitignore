@@ -9,3 +9,5 @@ autom4te.cache/
 *~
 config.log
 test/
+a.log
+*.csv
